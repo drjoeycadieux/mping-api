@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mPING Tracker Pro - Fixed</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <style>
+      :root {
+        --primary: #00d2ff;
+        --bg: #121212;
+        --panel: rgba(25, 25, 25, 0.95);
+      }
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        font-family: "Segoe UI", system-ui, sans-serif;
+        color: white;
+        overflow: hidden;
+      }
+      #map {
+        height: 100vh;
+        width: 100%;
+        z-index: 1;
+      }
+
+      #ui-overlay {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        z-index: 1000;
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid #333;
+        width: 260px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      }
+
+      .status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        margin-bottom: 12px;
+      }
+      .dot {
+        height: 10px;
+        width: 10px;
+        border-radius: 50%;
+        background: #555;
+      }
+      .dot.active {
+        background: #2ecc71;
+        box-shadow: 0 0 10px #2ecc71;
+      }
+      .dot.loading {
+        background: #f1c40f;
+        animation: pulse 1s infinite;
+      }
+      .dot.error {
+        background: #e74c3c;
+      }
+
+      @keyframes pulse {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+
+      .stats {
+        margin: 15px 0;
+        border-top: 1px solid #333;
+        padding-top: 15px;
+      }
+      .stats b {
+        font-size: 1.6rem;
+        color: var(--primary);
+      }
+
+      button {
+        width: 100%;
+        padding: 12px;
+        border: none;
+        border-radius: 6px;
+        background: var(--primary);
+        color: #000;
+        font-weight: bold;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      button:hover {
+        background: #00b8e6;
+        filter: brightness(1.1);
+      }
+      #log {
+        font-size: 0.7rem;
+        color: #aaa;
+        margin-top: 10px;
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ui-overlay">
+      <div class="status-indicator">
+        <div id="status-dot" class="dot"></div>
+        <span id="status-text">Initialisation...</span>
+      </div>
+      <h2
+        style="
+          margin: 0;
+          font-size: 1.1rem;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+        "
+      >
+        mPING Live Flux
+      </h2>
+      <div class="stats"><b id="report-count">0</b> rapports trouvés</div>
+      <button onclick="fetchData()">ACTUALISER LA CARTE</button>
+      <div id="log"></div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+      // 1. Initialisation de la carte
+      const map = L.map("map", {
+        preferCanvas: true,
+        zoomControl: false,
+      }).setView([39.8, -98.5], 4);
+
+      // 2. Fond de carte (Dark Matter de CARTO)
+      L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        {
+          attribution: "&copy; CARTO",
+          maxZoom: 19,
+        }
+      ).addTo(map);
+
+      const markerLayer = L.layerGroup().addTo(map);
+
+      async function fetchData() {
+        const statusText = document.getElementById("status-text");
+        const statusDot = document.getElementById("status-dot");
+        const countEl = document.getElementById("report-count");
+        const logEl = document.getElementById("log");
+
+        statusText.innerText = "Connexion API...";
+        statusDot.className = "dot loading";
+        logEl.innerText = "";
+
+        // URL sécurisée (HTTPS) et sans pagination complexe pour avoir le flux direct
+        const targetUrl =
+          "https://mping.ou.edu/mping/api/v2.0/reports?limit=300";
+        // Utilisation de AllOrigins (plus stable pour le bypass CORS)
+        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(
+          targetUrl
+        )}`;
+
+        try {
+          const response = await fetch(proxyUrl);
+          if (!response.ok) throw new Error("Erreur de réponse proxy");
+
+          const wrapper = await response.json();
+          const data = JSON.parse(wrapper.contents);
+
+          // Vérification de la structure des données
+          const reports = Array.isArray(data) ? data : data.reports || [];
+
+          markerLayer.clearLayers();
+          const bounds = [];
+
+          reports.forEach((r) => {
+            if (r.latitude && r.longitude) {
+              const color = getColor(r.category);
+              const marker = L.circleMarker([r.latitude, r.longitude], {
+                radius: 6,
+                fillColor: color,
+                color: "#fff",
+                weight: 1,
+                fillOpacity: 0.8,
+              });
+
+              marker.bindPopup(`
+                        <div style="color:#000">
+                            <strong>${r.description || "Rapport"}</strong><br>
+                            <small>${new Date(
+                              r.obtime
+                            ).toLocaleString()}</small>
+                        </div>
+                    `);
+
+              marker.addTo(markerLayer);
+              bounds.push([r.latitude, r.longitude]);
+            }
+          });
+
+          countEl.innerText = reports.length;
+
+          if (reports.length > 0) {
+            statusText.innerText = "Données reçues";
+            statusDot.className = "dot active";
+            // Ajuster la vue automatiquement sur les points trouvés
+            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 6 });
+          } else {
+            statusText.innerText = "Aucun rapport récent";
+            statusDot.className = "dot";
+            logEl.innerText = "L'API a répondu mais la liste est vide.";
+          }
+        } catch (err) {
+          console.error(err);
+          statusText.innerText = "Erreur Flux";
+          statusDot.className = "dot error";
+          logEl.innerText = "Détails: " + err.message;
+        }
+      }
+
+      function getColor(cat) {
+        const c = String(cat || "").toLowerCase();
+        if (c.includes("rain") || c.includes("liquid")) return "#3498db";
+        if (c.includes("snow") || c.includes("frozen")) return "#ecf0f1";
+        if (c.includes("hail") || c.includes("ice")) return "#f1c40f";
+        if (c.includes("wind") || c.includes("damage")) return "#9b59b6";
+        return "#2ecc71"; // Divers / Autres
+      }
+
+      // Premier lancement
+      fetchData();
+
+      // Rafraîchissement auto (toutes les 5 minutes)
+      setInterval(fetchData, 300000);
+    </script>
+  </body>
+</html>
